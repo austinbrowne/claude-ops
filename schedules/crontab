@@ -1,0 +1,36 @@
+# claude-ops scheduled agent jobs
+# Install: crontab schedules/crontab
+# View: crontab -l
+# Remove: crontab -r
+#
+# Logs: ~/Git_Repos/claude-ops/logs/
+# Budget: ~/Git_Repos/claude-ops/state/budget-YYYY-MM-DD.json
+#
+# IMPORTANT: Ensure PATH includes claude CLI location.
+# The SHELL and PATH lines below ensure cron can find required tools.
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+
+# ============================================================================
+# Daily Jobs
+# ============================================================================
+
+# PM: Morning triage — review and label open issues
+0 9 * * *    /Users/austin/Git_Repos/claude-ops/jobs/pm-triage.sh >> /Users/austin/Git_Repos/claude-ops/logs/cron.log 2>&1
+
+# Developer: Implement next ready issue (after PM triage)
+0 11 * * *   /Users/austin/Git_Repos/claude-ops/jobs/dev-implement.sh >> /Users/austin/Git_Repos/claude-ops/logs/cron.log 2>&1
+
+# QA: Review open PRs (after dev has had time to work)
+0 14 * * *   /Users/austin/Git_Repos/claude-ops/jobs/qa-review-prs.sh >> /Users/austin/Git_Repos/claude-ops/logs/cron.log 2>&1
+
+# ============================================================================
+# Weekly Jobs
+# ============================================================================
+
+# PM: Explore codebase for improvement opportunities (Monday morning)
+0 10 * * 1   /Users/austin/Git_Repos/claude-ops/jobs/pm-explore.sh >> /Users/austin/Git_Repos/claude-ops/logs/cron.log 2>&1
+
+# Tech Lead: Architecture review (Friday afternoon)
+0 15 * * 5   /Users/austin/Git_Repos/claude-ops/jobs/tech-lead-review.sh >> /Users/austin/Git_Repos/claude-ops/logs/cron.log 2>&1

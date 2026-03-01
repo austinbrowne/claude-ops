@@ -1,0 +1,13 @@
+# Runtime state
+state/budget-*.json
+state/invocations.jsonl
+state/locks/
+
+# Logs
+logs/
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
