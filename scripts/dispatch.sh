@@ -15,10 +15,13 @@ set -euo pipefail
 # Called by job scripts in jobs/. Not typically invoked directly.
 # ============================================================================
 
-OPS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${OPS_ROOT}/config.json"
-STATE_DIR="${OPS_ROOT}/state"
-LOG_DIR="${OPS_ROOT}/logs"
+# CLAUDE_OPS_HOME takes priority over OPS_ROOT if set.
+# When called by GitHub Actions workflows, CLAUDE_OPS_HOME is set via vars.
+# When called directly or by cron, OPS_ROOT is auto-detected from script location.
+OPS_ROOT="${OPS_ROOT:-${CLAUDE_OPS_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+CONFIG="${CONFIG:-${OPS_ROOT}/config.json}"
+STATE_DIR="${STATE_DIR:-${OPS_ROOT}/state}"
+LOG_DIR="${LOG_DIR:-${OPS_ROOT}/logs}"
 
 # ============================================================================
 # Utilities
@@ -29,6 +32,30 @@ log_warn()  { printf "[dispatch] WARN: %s\n" "$*" >&2; }
 log_error() { printf "[dispatch] ERROR: %s\n" "$*" >&2; }
 
 epoch_now() { date +%s; }
+
+# Validate OPS_ROOT path — defends against path traversal/injection when
+# CLAUDE_OPS_HOME is set from an external source (GitHub Actions vars).
+validate_ops_root() {
+  # Must be an absolute path with no metacharacters
+  if ! [[ "$OPS_ROOT" =~ ^/[a-zA-Z0-9/_.-]+$ ]]; then
+    log_error "Invalid OPS_ROOT: must be absolute path, no metacharacters"
+    log_error "Got: $OPS_ROOT"
+    return 1
+  fi
+
+  # Must exist as a directory
+  if [[ ! -d "$OPS_ROOT" ]]; then
+    log_error "OPS_ROOT does not exist: $OPS_ROOT"
+    return 1
+  fi
+
+  # Must contain config.json (sanity check that it's actually a claude-ops dir)
+  if [[ ! -f "${OPS_ROOT}/config.json" ]]; then
+    log_error "OPS_ROOT missing config.json — is this a claude-ops directory?"
+    log_error "Path: $OPS_ROOT"
+    return 1
+  fi
+}
 
 # ============================================================================
 # Config Helpers
@@ -182,28 +209,111 @@ acquire_target_lock() {
     return 0
   fi
 
-  # Check if lock holder is still alive.
-  # Note: There is a small TOCTOU race between rm and mkdir — if another process
-  # creates the lock in between, the mkdir will fail and we return 1 (safe denial).
+  # Lock exists — check if holder is still alive.
   if [[ -f "${lockdir}/pid" ]]; then
     local pid
     pid=$(<"${lockdir}/pid")
-    if ! kill -0 "$pid" 2>/dev/null; then
-      log_warn "Removing stale lock for '$target_name' (pid $pid is dead)"
-      rm -rf "$lockdir"
-      mkdir "$lockdir" 2>/dev/null || { log_error "Failed to acquire lock after cleanup"; return 1; }
-      echo $$ > "${lockdir}/pid"
-      return 0
+    if kill -0 "$pid" 2>/dev/null; then
+      # Lock holder is alive — genuine contention
+      log_error "Target '$target_name' is locked by another agent (pid: $pid)"
+      return 1
+    fi
+
+    # Lock holder is dead — stale lock detected.
+    # Use rename-then-mkdir to avoid the TOCTOU race between rm and mkdir.
+    # The rename is namespaced by our PID so concurrent stale detectors don't collide.
+    log_warn "Stale lock for '$target_name' (pid $pid is dead) — recovering"
+    local stale_name="${lockdir}.stale.$$"
+    if mv "$lockdir" "$stale_name" 2>/dev/null; then
+      # We successfully moved the stale lock aside
+      if mkdir "$lockdir" 2>/dev/null; then
+        echo $$ > "${lockdir}/pid"
+        rm -rf "$stale_name" 2>/dev/null || true
+        return 0
+      else
+        # Someone else got the lock between our mv and mkdir — clean up and fail
+        rm -rf "$stale_name" 2>/dev/null || true
+        log_error "Failed to acquire lock for '$target_name' after stale recovery"
+        return 1
+      fi
+    else
+      # Another process already moved the stale lock — they'll handle it
+      log_error "Lock for '$target_name' is being recovered by another process"
+      return 1
     fi
   fi
 
-  log_error "Target '$target_name' is locked by another agent (pid: ${pid:-unknown})"
+  # No PID file — treat as stale and try the same rename recovery
+  log_warn "Lock for '$target_name' has no PID file — treating as stale"
+  local stale_name="${lockdir}.stale.$$"
+  if mv "$lockdir" "$stale_name" 2>/dev/null; then
+    if mkdir "$lockdir" 2>/dev/null; then
+      echo $$ > "${lockdir}/pid"
+      rm -rf "$stale_name" 2>/dev/null || true
+      return 0
+    else
+      rm -rf "$stale_name" 2>/dev/null || true
+      log_error "Failed to acquire lock for '$target_name' after stale recovery"
+      return 1
+    fi
+  fi
+
+  log_error "Lock for '$target_name' is being recovered by another process"
   return 1
 }
 
 release_target_lock() {
   local target_name="$1"
   local lockdir="${STATE_DIR}/locks/${target_name}.lock"
+  rm -rf "$lockdir" 2>/dev/null || true
+}
+
+# ============================================================================
+# Budget Locking — serializes budget check + record across concurrent roles
+#
+# Budget lock is NEVER held simultaneously with target lock (prevents deadlock).
+# Dispatch sequence: acquire budget → check → release budget → acquire target →
+# run agent → acquire budget → record → release budget → release target.
+# ============================================================================
+
+acquire_budget_lock() {
+  local lockdir="${STATE_DIR}/locks/budget.lock"
+  local max_attempts=10
+  local attempt=0
+
+  mkdir -p "${STATE_DIR}/locks"
+
+  while (( attempt < max_attempts )); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      echo $$ > "${lockdir}/pid"
+      return 0
+    fi
+
+    # Check if holder is alive
+    if [[ -f "${lockdir}/pid" ]]; then
+      local pid
+      pid=$(<"${lockdir}/pid")
+      if ! kill -0 "$pid" 2>/dev/null; then
+        # Stale — use rename-then-mkdir
+        local stale_name="${lockdir}.stale.$$"
+        if mv "$lockdir" "$stale_name" 2>/dev/null; then
+          rm -rf "$stale_name" 2>/dev/null || true
+          continue  # retry mkdir on next iteration
+        fi
+      fi
+    fi
+
+    # Lock is held by a live process — wait briefly and retry
+    attempt=$(( attempt + 1 ))
+    sleep 0.1
+  done
+
+  log_error "Failed to acquire budget lock after ${max_attempts} attempts — aborting (fail-closed)"
+  return 1
+}
+
+release_budget_lock() {
+  local lockdir="${STATE_DIR}/locks/budget.lock"
   rm -rf "$lockdir" 2>/dev/null || true
 }
 
@@ -220,23 +330,63 @@ load_role() {
     exit 1
   fi
 
-  # Extract frontmatter fields using simple parsing
-  ROLE_TOOLS=$(sed -n 's/^tools: *//p' "$role_file" | head -1)
-  ROLE_DISALLOWED_TOOLS=$(sed -n 's/^disallowedTools: *//p' "$role_file" | head -1)
-  ROLE_SKILLS=$(sed -n 's/^skills: *//p' "$role_file" | head -1)
-  ROLE_MODE=$(sed -n 's/^mode: *//p' "$role_file" | head -1)
+  # Require yq for frontmatter parsing — no sed fallback.
+  # yq (mikefarah/yq v4+) is a hard dependency; see docs/solutions/cross-validate-parsed-role-config.md
+  if ! command -v yq &>/dev/null; then
+    log_error "yq is required but not found — install with: brew install yq"
+    log_error "yq is a hard requirement for role config parsing (no sed fallback)"
+    exit 1
+  fi
+
+  # Extract frontmatter fields using yq --front-matter=extract
+  ROLE_TOOLS=$(yq --front-matter=extract '.tools // ""' "$role_file" 2>/dev/null) || ROLE_TOOLS=""
+  ROLE_DISALLOWED_TOOLS=$(yq --front-matter=extract '.disallowedTools // ""' "$role_file" 2>/dev/null) || ROLE_DISALLOWED_TOOLS=""
+  ROLE_SKILLS=$(yq --front-matter=extract '.skills // ""' "$role_file" 2>/dev/null) || ROLE_SKILLS=""
+  ROLE_MODE=$(yq --front-matter=extract '.mode // ""' "$role_file" 2>/dev/null) || ROLE_MODE=""
+
+  # Trim whitespace from parsed values
+  ROLE_TOOLS="${ROLE_TOOLS## }"; ROLE_TOOLS="${ROLE_TOOLS%% }"
+  ROLE_DISALLOWED_TOOLS="${ROLE_DISALLOWED_TOOLS## }"; ROLE_DISALLOWED_TOOLS="${ROLE_DISALLOWED_TOOLS%% }"
+  ROLE_MODE="${ROLE_MODE## }"; ROLE_MODE="${ROLE_MODE%% }"
 
   # Default tools if not specified
   if [[ -z "$ROLE_TOOLS" ]]; then ROLE_TOOLS="Read,Grep,Glob,Bash"; fi
-  if [[ -z "$ROLE_MODE" ]]; then ROLE_MODE="read-only"; fi
 
-  # Safety check: read-only roles MUST have disallowedTools defined
-  ROLE_DISALLOWED_TOOLS="${ROLE_DISALLOWED_TOOLS## }"  # trim leading whitespace
-  ROLE_DISALLOWED_TOOLS="${ROLE_DISALLOWED_TOOLS%% }"  # trim trailing whitespace
-  if [[ "$ROLE_MODE" == "read-only" && -z "$ROLE_DISALLOWED_TOOLS" ]]; then
-    log_error "Role '${role_name}' is read-only but has no disallowedTools — aborting to prevent full access"
-    exit 1
+  # Validate mode against allowlist — fail closed on unknown values
+  case "$ROLE_MODE" in
+    read-only|read-write) ;; # valid
+    "")
+      log_error "Role '${role_name}' has no mode field — aborting (must be 'read-only' or 'read-write')"
+      exit 1
+      ;;
+    *)
+      log_error "Role '${role_name}' has invalid mode '${ROLE_MODE}' — must be 'read-only' or 'read-write'"
+      exit 1
+      ;;
+  esac
+
+  # Safety check: read-only roles MUST have disallowedTools defined with minimum set
+  if [[ "$ROLE_MODE" == "read-only" ]]; then
+    if [[ -z "$ROLE_DISALLOWED_TOOLS" ]]; then
+      log_error "Role '${role_name}' is read-only but has no disallowedTools — aborting to prevent full access"
+      exit 1
+    fi
+    # Verify minimum required tools are disallowed (Write, Edit, NotebookEdit)
+    local missing_tools=()
+    for required_tool in Write Edit NotebookEdit; do
+      if ! echo "$ROLE_DISALLOWED_TOOLS" | grep -qw "$required_tool"; then
+        missing_tools+=("$required_tool")
+      fi
+    done
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+      log_error "Role '${role_name}' is read-only but disallowedTools missing: ${missing_tools[*]}"
+      log_error "Read-only roles must disallow at minimum: Write, Edit, NotebookEdit"
+      exit 1
+    fi
   fi
+
+  # Log parsed values for audit trail
+  log_info "Role config: mode=${ROLE_MODE} disallowedTools=${ROLE_DISALLOWED_TOOLS:-none}"
 
   # Extract prompt (everything after the second --- frontmatter delimiter)
   ROLE_PROMPT=$(awk 'BEGIN{c=0} /^---$/{c++; next} c>=2' "$role_file")
@@ -419,14 +569,14 @@ invoke_agent() {
 parse_summary() {
   local output="$1"
 
-  if ! echo "$output" | grep -qF '---DISPATCH_SUMMARY_START---'; then
+  if ! echo "$output" | grep -qF -- '---DISPATCH_SUMMARY_START---'; then
     log_warn "Agent output missing summary sentinels"
     echo '{"status": "unknown", "actions_taken": [], "artifacts": [], "notes": "No summary provided"}'
     return
   fi
 
   local summary_block
-  summary_block=$(echo "$output" | sed -n '/---DISPATCH_SUMMARY_START---/,/---DISPATCH_SUMMARY_END---/p' | grep -v '---DISPATCH_SUMMARY')
+  summary_block=$(echo "$output" | sed -n '/---DISPATCH_SUMMARY_START---/,/---DISPATCH_SUMMARY_END---/p' | grep -v -- '---DISPATCH_SUMMARY')
 
   echo "$summary_block"
 }
@@ -503,6 +653,9 @@ parse_args() {
 main() {
   parse_args "$@"
 
+  # Validate OPS_ROOT before any operations
+  validate_ops_root || exit 1
+
   # Resolve target
   local target_path
   target_path=$(resolve_target "$TARGET")
@@ -525,8 +678,12 @@ main() {
 
   mkdir -p "$STATE_DIR" "$LOG_DIR"
 
-  # Budget check
-  check_budget || exit 1
+  # Budget check (under budget lock — released before target lock acquired)
+  acquire_budget_lock || exit 1
+  local budget_ok=true
+  check_budget || budget_ok=false
+  release_budget_lock
+  if [[ "$budget_ok" != "true" ]]; then exit 1; fi
 
   # Dry run
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -587,8 +744,15 @@ main() {
   # Save full output
   echo "$result" > "$run_log"
 
-  # Record invocation (includes token usage from parse_claude_output globals)
-  record_invocation "$ROLE" "$TARGET" "$duration" "$ec" "$LAST_INPUT_TOKENS" "$LAST_OUTPUT_TOKENS"
+  # Record invocation under budget lock (second lock window — independent of target lock)
+  if acquire_budget_lock; then
+    record_invocation "$ROLE" "$TARGET" "$duration" "$ec" "$LAST_INPUT_TOKENS" "$LAST_OUTPUT_TOKENS"
+    release_budget_lock
+  else
+    # Fail-open: record without lock rather than losing the invocation data
+    log_warn "Could not acquire budget lock for record_invocation — recording unlocked"
+    record_invocation "$ROLE" "$TARGET" "$duration" "$ec" "$LAST_INPUT_TOKENS" "$LAST_OUTPUT_TOKENS"
+  fi
 
   if [[ $ec -ne 0 ]]; then
     log_error "Agent failed (exit $ec) after ${duration}s. Log: $run_log"
@@ -608,4 +772,5 @@ main() {
   log_info "Full log: $run_log"
 }
 
-main "$@"
+# Guard: only run main() when executed directly, not when sourced for testing
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
