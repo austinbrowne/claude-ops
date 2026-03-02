@@ -64,6 +64,32 @@ check_dependencies() {
   check_command "git" "Version control" "brew install git / apt install git" || true
   check_command "claude" "Claude Code CLI (agent runtime)" "npm install -g @anthropic-ai/claude-code" || true
   check_command "gh" "GitHub CLI (issue/PR operations)" "brew install gh / apt install gh" || true
+  check_command "yq" "YAML parsing (role config frontmatter)" "brew install yq" || true
+
+  # Verify yq is mikefarah/yq v4+ (not the Python wrapper)
+  if command -v yq &>/dev/null; then
+    local yq_version
+    yq_version=$(yq --version 2>/dev/null) || true
+    if echo "$yq_version" | grep -q "github.com/mikefarah/yq"; then
+      local yq_major
+      yq_major=$(echo "$yq_version" | grep -oE 'v[0-9]+' | head -1 | tr -d 'v')
+      if [[ -n "$yq_major" ]] && (( yq_major >= 4 )); then
+        ok "yq is mikefarah/yq v${yq_major} (required)"
+      else
+        fail "yq must be mikefarah/yq v4+, found: $yq_version"
+        ERRORS=$(( ERRORS + 1 ))
+      fi
+    else
+      fail "yq must be mikefarah/yq (found different yq implementation)"
+      printf "    Install: brew install yq (provides mikefarah/yq)\n"
+      ERRORS=$(( ERRORS + 1 ))
+    fi
+  fi
+
+  check_command "bats" "Bash test framework (dev/test only)" "brew install bats-core" || {
+    warn "bats-core is optional (only needed for running tests)"
+    WARNINGS=$(( WARNINGS + 1 ))
+  }
 
   # Optional: timeout command
   if command -v timeout &>/dev/null; then
