@@ -37,7 +37,29 @@ jobs:
         env:
           CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
 
+      - name: Check review loop count
+        id: loop-check
+        run: |
+          # Count CHANGES_REQUESTED reviews on this PR to detect loops
+          FIX_COUNT=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json reviews --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
+          MAX_FIX_ROUNDS=3
+          echo "fix_count=$FIX_COUNT" >> "$GITHUB_OUTPUT"
+          if (( FIX_COUNT > MAX_FIX_ROUNDS )); then
+            echo "::warning::Review fix loop limit reached ($FIX_COUNT/$MAX_FIX_ROUNDS). Human intervention needed."
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Review fix loop limit reached ($FIX_COUNT/$MAX_FIX_ROUNDS rounds). Remaining findings need human attention."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Review fix round ${FIX_COUNT}/$MAX_FIX_ROUNDS"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+
       - name: Fix review findings on PR #${{ github.event.pull_request.number }}
+        if: steps.loop-check.outputs.skip != 'true'
         run: |
           "$CLAUDE_OPS_HOME/scripts/dispatch.sh" \
             --role developer \
