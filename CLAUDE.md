@@ -67,6 +67,7 @@ Cron (fallback — daily 22:00 for most jobs)
 | Label `needs_refinement` | `claude-enhance.yml` | `pm-enhance.sh` |
 | Label `ready_for_dev` | `claude-implement.yml` | `dev-implement.sh` |
 | PR opened/synchronized | `claude-review.yml` | `dev-review-prs.sh` |
+| PR review: changes requested | `claude-fix-review.yml` | `dispatch.sh` (developer) |
 | Weekly Fri 15:00 | `claude-tech-review.yml` | `tech-lead-review.sh` |
 | Manual (GitHub UI) | `claude-dispatch.yml` | `dispatch.sh` |
 
@@ -82,6 +83,7 @@ Jobs fire within minutes of the triggering event. No fixed schedule — reacts i
 | Label `needs_refinement` | PM Enhance |
 | Label `ready_for_dev` | Developer Implement |
 | PR opened/updated | Code Reviewer Review |
+| PR review: changes requested | Developer Fix Review Findings |
 | Manual trigger | Any role via dispatch |
 
 ### Fallback: Cron (Catch-Up)
@@ -109,8 +111,9 @@ Reduced frequency. Catches work missed by events (offline runner, API-created is
 ```
 PM files/enhances issues → [ready_for_dev]
   → Developer implements + self-reviews → [PR]
-  → Code Reviewer runs independent fresh-eyes review on PR → [approve/request changes]
-  → Human merges → Tech Lead reviews architecture (Friday)
+  → Code Reviewer runs independent fresh-eyes review on PR
+    → [approve] → Human merges → Tech Lead reviews architecture (Friday)
+    → [request changes] → Developer fixes findings → push → re-review (loop)
 ```
 
 The Developer runs `/fresh-eyes-review` on its own code and fixes all findings before creating the PR (first review pass). The Code Reviewer then runs a second independent `/fresh-eyes-review` on the PR with zero context (second review pass). This catches issues the first pass missed.
@@ -129,6 +132,8 @@ A single fresh-eyes review doesn't catch everything. The implementing Developer 
 
 - Four roles, clear boundaries: PM reads + files issues, Developer writes code, Code Reviewer reads + reviews PRs, Tech Lead reads + advises
 - Two-pass review: Developer self-reviews, then Code Reviewer provides independent review
+- **Review action enforcement:** Code Reviewer MUST use `--request-changes` for FIX_BEFORE_COMMIT verdicts and `--approve` for clean reviews. This maps to GitHub's review state so humans can trust the PR status at a glance. See `roles/code-reviewer.md` Review Action Protocol.
+- **Recommended branch protection:** Enable "Require approvals" on the target repo's main branch. This ensures no PR merges without the Code Reviewer's explicit approval, creating a hard gate that the agent cannot bypass.
 - Read-only roles skip target lock (safe to overlap)
 - Read-write roles verify clean working tree before dispatch
 - No agent can merge PRs, push to main, or force push

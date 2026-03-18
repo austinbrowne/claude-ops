@@ -1,0 +1,78 @@
+# claude-fix-review.yml — Developer addresses requested changes on a PR
+#
+# Triggers when a PR review requests changes. The Developer agent checks out
+# the PR branch, reads the review findings, fixes them, and pushes. The push
+# triggers claude-review.yml for a fresh re-review.
+#
+# Copy this file to your target repo's .github/workflows/ directory.
+#
+# Required repository variables (Settings > Secrets and variables > Variables):
+#   CLAUDE_OPS_HOME  — absolute path to claude-ops on the self-hosted runner
+#   TARGET_NAME      — matches config.json targets[].name
+
+name: Claude Fix Review
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: claude-ops-${{ vars.TARGET_NAME }}-fix-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix-review:
+    # Only trigger when changes are requested (not on approvals or comments)
+    if: >-
+      github.event.review.state == 'changes_requested' &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: self-hosted
+    steps:
+      - name: Validate claude-ops path
+        run: |
+          if [[ ! -d "$CLAUDE_OPS_HOME" ]] || [[ ! -f "$CLAUDE_OPS_HOME/config.json" ]]; then
+            echo "::error::CLAUDE_OPS_HOME is not set or invalid: $CLAUDE_OPS_HOME"
+            exit 1
+          fi
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+
+      - name: Fix review findings on PR #${{ github.event.pull_request.number }}
+        run: |
+          "$CLAUDE_OPS_HOME/scripts/dispatch.sh" \
+            --role developer \
+            --target "$TARGET_NAME" \
+            --timeout 1800 \
+            --task "Fix review findings on PR #${PR_NUMBER}. Follow these steps exactly.
+
+          STEP 0 — Checkout the PR branch:
+            git fetch origin ${PR_BRANCH}
+            git checkout ${PR_BRANCH}
+            git pull origin ${PR_BRANCH}
+
+          STEP 1 — Read the review that requested changes:
+            Run: gh pr view ${PR_NUMBER} --json reviews --jq '.reviews[] | select(.state == \"CHANGES_REQUESTED\") | .body'
+            Carefully read ALL findings. Understand what needs to be fixed.
+
+          STEP 2 — Fix each finding:
+            a. Address every HIGH and CRITICAL finding from the review
+            b. Address MEDIUM findings where the fix is clear
+            c. For each fix, verify the change is correct
+            d. Run tests to ensure nothing is broken
+
+          STEP 3 — Self-review:
+            a. Stage your changes: git add the files you changed
+            b. Run /fresh-eyes-review on your fixes
+            c. Fix any new findings from the self-review
+
+          STEP 4 — Push fixes:
+            a. Commit: git commit -m 'fix: address review findings on PR #${PR_NUMBER}'
+            b. Push: git push origin ${PR_BRANCH}
+            c. Comment on the PR: gh pr comment ${PR_NUMBER} --body 'Addressed review findings. Ready for re-review.'
+
+          Do NOT create a new PR. Push to the existing branch — this triggers a re-review automatically."
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+          TARGET_NAME: ${{ vars.TARGET_NAME }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}

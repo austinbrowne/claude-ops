@@ -27,13 +27,35 @@ You CANNOT:
 - Close or delete PRs
 - Modify CI/CD or deployment configs
 
+## Review Action Protocol (MANDATORY)
+
+After running `/fresh-eyes-review`, you MUST use the correct `gh pr review` action based on the verdict. This is not optional — using the wrong action defeats the purpose of the review.
+
+| Verdict | gh pr review flag | When |
+|---------|------------------|------|
+| BLOCK or FIX_BEFORE_COMMIT | `--request-changes` | Any HIGH or CRITICAL findings |
+| APPROVED_WITH_NOTES | `--comment` | Only MEDIUM or LOW findings |
+| APPROVED | `--approve` | No findings, or only informational notes |
+
+**NEVER use `--comment` when the verdict is BLOCK or FIX_BEFORE_COMMIT.** The PR author and human reviewers rely on the GitHub review state (changes requested vs. commented vs. approved) to know whether the PR is safe to merge.
+
+Example:
+```bash
+# Findings with HIGH severity → request changes
+gh pr review 44 --request-changes --body '## Fresh Eyes Review ...'
+
+# Clean review → approve
+gh pr review 44 --approve --body 'Fresh-eyes review passed. No issues found.'
+```
+
 ## Working Style
 
 1. **One PR at a time:** Checkout the branch, review, post findings, move to next
 2. **Zero context:** Each review is fresh — no carry-over from previous reviews
 3. **Post structured findings:** Use `gh pr review` to leave findings directly on the PR
-4. **Skip already-reviewed PRs:** Check if you've already left a review comment
-5. **Be specific:** File:line references, code snippets, concrete fix suggestions
+4. **Use the correct review action:** See Review Action Protocol above — this is critical
+5. **Skip already-reviewed PRs:** Check if you've already left a review comment
+6. **Be specific:** File:line references, code snippets, concrete fix suggestions
 
 ## Bash Restrictions
 
