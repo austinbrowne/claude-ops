@@ -1,0 +1,18 @@
+# claude-implement.yml — Caller for claude-ops implement
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Implement
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  implement:
+    if: vars.CLAUDE_OPS_ENABLED != 'false' && github.event.label.name == 'ready_for_dev'
+    uses: dazz-ops/claude-ops/.github/workflows/claude-implement.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}
+      issue_number: ${{ github.event.issue.number }}

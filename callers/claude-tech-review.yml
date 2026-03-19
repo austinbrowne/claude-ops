@@ -1,0 +1,18 @@
+# claude-tech-review.yml — Caller for claude-ops tech review
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Tech Review
+
+on:
+  schedule:
+    - cron: '0 15 * * 5'  # Friday at 15:00
+  workflow_dispatch:
+
+jobs:
+  review:
+    if: vars.CLAUDE_OPS_ENABLED != 'false'
+    uses: dazz-ops/claude-ops/.github/workflows/claude-tech-review.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}

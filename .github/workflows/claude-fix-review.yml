@@ -1,0 +1,101 @@
+# claude-fix-review.yml — Reusable workflow: developer addresses requested changes on a PR
+#
+# Called by target repos via workflow_call.
+# Required caller repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+
+name: Claude Fix Review (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_name:
+        required: true
+        type: string
+      pr_number:
+        required: true
+        type: string
+      pr_branch:
+        required: true
+        type: string
+
+concurrency:
+  group: claude-ops-${{ inputs.target_name }}-fix-pr-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  fix-review:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Validate claude-ops path
+        run: |
+          if [[ ! -d "$CLAUDE_OPS_HOME" ]] || [[ ! -f "$CLAUDE_OPS_HOME/config.json" ]]; then
+            echo "::error::CLAUDE_OPS_HOME is not set or invalid: $CLAUDE_OPS_HOME"
+            exit 1
+          fi
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+
+      - name: Check review loop count
+        id: loop-check
+        run: |
+          # Count CHANGES_REQUESTED reviews on this PR to detect loops
+          FIX_COUNT=$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --json reviews --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | length')
+          MAX_FIX_ROUNDS=3
+          echo "fix_count=$FIX_COUNT" >> "$GITHUB_OUTPUT"
+          if (( FIX_COUNT > MAX_FIX_ROUNDS )); then
+            echo "::warning::Review fix loop limit reached ($FIX_COUNT/$MAX_FIX_ROUNDS). Human intervention needed."
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Review fix loop limit reached ($FIX_COUNT/$MAX_FIX_ROUNDS rounds). Remaining findings need human attention."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Review fix round ${FIX_COUNT}/$MAX_FIX_ROUNDS"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Fix review findings on PR #${{ inputs.pr_number }}
+        if: steps.loop-check.outputs.skip != 'true'
+        run: |
+          "$CLAUDE_OPS_HOME/scripts/dispatch.sh" \
+            --role developer \
+            --target "$TARGET_NAME" \
+            --timeout 1800 \
+            --task "Fix review findings on PR #${PR_NUMBER}. Follow these steps exactly.
+
+          STEP 0 — Checkout the PR branch:
+            git fetch origin ${PR_BRANCH}
+            git checkout ${PR_BRANCH}
+            git pull origin ${PR_BRANCH}
+
+          STEP 1 — Read the review that requested changes:
+            Run: gh pr view ${PR_NUMBER} --json reviews --jq '.reviews[] | select(.state == \"CHANGES_REQUESTED\") | .body'
+            Carefully read ALL findings. Understand what needs to be fixed.
+
+          STEP 2 — Fix each finding:
+            a. Address every HIGH and CRITICAL finding from the review
+            b. Address MEDIUM findings where the fix is clear
+            c. For each fix, verify the change is correct
+            d. Run tests to ensure nothing is broken
+
+          STEP 3 — Self-review:
+            a. Stage your changes: git add the files you changed
+            b. Run /fresh-eyes-review on your fixes
+            c. Fix any new findings from the self-review
+
+          STEP 4 — Push fixes:
+            a. Commit: git commit -m 'fix: address review findings on PR #${PR_NUMBER}'
+            b. Push: git push origin ${PR_BRANCH}
+            c. Comment on the PR: gh pr comment ${PR_NUMBER} --body 'Addressed review findings. Ready for re-review.'
+
+          Do NOT create a new PR. Push to the existing branch — this triggers a re-review automatically."
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_BRANCH: ${{ inputs.pr_branch }}

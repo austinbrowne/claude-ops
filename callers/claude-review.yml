@@ -1,0 +1,19 @@
+# claude-review.yml — Caller for claude-ops review
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    if: vars.CLAUDE_OPS_ENABLED != 'false' && github.event.pull_request.head.repo.fork == false
+    uses: dazz-ops/claude-ops/.github/workflows/claude-review.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}
+      pr_number: ${{ github.event.pull_request.number }}
+      pr_branch: ${{ github.event.pull_request.head.ref }}

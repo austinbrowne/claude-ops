@@ -1,0 +1,38 @@
+# claude-dispatch.yml — Caller for claude-ops manual dispatch
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      role:
+        description: 'Agent role'
+        required: true
+        type: choice
+        options:
+          - product-manager
+          - developer
+          - code-reviewer
+          - tech-lead
+      task:
+        description: 'Task description for the agent'
+        required: true
+        type: string
+      timeout:
+        description: 'Timeout in seconds (default: from config)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  dispatch:
+    if: vars.CLAUDE_OPS_ENABLED != 'false'
+    uses: dazz-ops/claude-ops/.github/workflows/claude-dispatch.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}
+      role: ${{ inputs.role }}
+      task: ${{ inputs.task }}
+      timeout: ${{ inputs.timeout }}

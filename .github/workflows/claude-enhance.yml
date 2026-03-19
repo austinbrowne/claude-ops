@@ -1,0 +1,48 @@
+# claude-enhance.yml — Reusable workflow: enhance issues labeled needs_refinement
+#
+# Called by target repos via workflow_call.
+# Required caller repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+
+name: Claude Enhance (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_name:
+        required: true
+        type: string
+      issue_number:
+        required: true
+        type: string
+
+concurrency:
+  group: claude-ops-${{ inputs.target_name }}-enhance
+  cancel-in-progress: false
+
+jobs:
+  enhance:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Validate claude-ops path
+        run: |
+          if [[ ! -d "$CLAUDE_OPS_HOME" ]] || [[ ! -f "$CLAUDE_OPS_HOME/config.json" ]]; then
+            echo "::error::CLAUDE_OPS_HOME is not set or invalid: $CLAUDE_OPS_HOME"
+            exit 1
+          fi
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+
+      - name: Enhance issue #${{ inputs.issue_number }}
+        run: |
+          "$CLAUDE_OPS_HOME/scripts/dispatch.sh" \
+            --role product-manager \
+            --target "$TARGET_NAME" \
+            --timeout 900 \
+            --task "Enhance issue #${ISSUE_NUMBER}: Read the issue, run /explore to understand affected code, add acceptance criteria, affected files, implementation hints, and edge cases. Remove needs_refinement label and add ready_for_dev."
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}

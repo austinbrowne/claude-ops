@@ -1,0 +1,18 @@
+# claude-enhance.yml — Caller for claude-ops enhance
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Enhance
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  enhance:
+    if: vars.CLAUDE_OPS_ENABLED != 'false' && github.event.label.name == 'needs_refinement'
+    uses: dazz-ops/claude-ops/.github/workflows/claude-enhance.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}
+      issue_number: ${{ github.event.issue.number }}

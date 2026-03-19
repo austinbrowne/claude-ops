@@ -1,0 +1,18 @@
+# claude-triage.yml — Caller for claude-ops triage
+# Place in your repo's .github/workflows/ directory
+# Required repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+# Optional: set CLAUDE_OPS_ENABLED=false to disable
+
+name: Claude Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    if: vars.CLAUDE_OPS_ENABLED != 'false'
+    uses: dazz-ops/claude-ops/.github/workflows/claude-triage.yml@main
+    with:
+      target_name: ${{ vars.TARGET_NAME }}
+      issue_number: ${{ github.event.issue.number }}

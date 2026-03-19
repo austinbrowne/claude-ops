@@ -1,0 +1,61 @@
+# claude-dispatch.yml — Reusable workflow: manual dispatch (any role)
+#
+# Called by target repos via workflow_call.
+# Required caller repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+
+name: Claude Dispatch (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_name:
+        required: true
+        type: string
+      role:
+        required: true
+        type: string
+      task:
+        required: true
+        type: string
+      timeout:
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: claude-ops-${{ inputs.target_name }}-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Validate claude-ops path
+        run: |
+          if [[ ! -d "$CLAUDE_OPS_HOME" ]] || [[ ! -f "$CLAUDE_OPS_HOME/config.json" ]]; then
+            echo "::error::CLAUDE_OPS_HOME is not set or invalid: $CLAUDE_OPS_HOME"
+            exit 1
+          fi
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+
+      - name: Dispatch ${{ inputs.role }}
+        run: |
+          cmd=("$CLAUDE_OPS_HOME/scripts/dispatch.sh"
+            --role "$ROLE"
+            --target "$TARGET_NAME"
+            --task "$TASK")
+          if [[ -n "$TIMEOUT" ]]; then
+            cmd+=(--timeout "$TIMEOUT")
+          fi
+          "${cmd[@]}"
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          ROLE: ${{ inputs.role }}
+          TASK: ${{ inputs.task }}
+          TIMEOUT: ${{ inputs.timeout }}

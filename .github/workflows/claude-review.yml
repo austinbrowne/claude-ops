@@ -1,0 +1,69 @@
+# claude-review.yml — Reusable workflow: fresh-eyes review on PRs
+#
+# Called by target repos via workflow_call.
+# Required caller repo variables: CLAUDE_OPS_HOME, TARGET_NAME
+
+name: Claude Review (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      target_name:
+        required: true
+        type: string
+      pr_number:
+        required: true
+        type: string
+      pr_branch:
+        required: true
+        type: string
+
+concurrency:
+  group: claude-ops-${{ inputs.target_name }}-review-pr-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Validate claude-ops path
+        run: |
+          if [[ ! -d "$CLAUDE_OPS_HOME" ]] || [[ ! -f "$CLAUDE_OPS_HOME/config.json" ]]; then
+            echo "::error::CLAUDE_OPS_HOME is not set or invalid: $CLAUDE_OPS_HOME"
+            exit 1
+          fi
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+
+      - name: Review PR #${{ inputs.pr_number }}
+        run: |
+          "$CLAUDE_OPS_HOME/scripts/dispatch.sh" \
+            --role code-reviewer \
+            --target "$TARGET_NAME" \
+            --timeout 1800 \
+            --task "Review PR #${PR_NUMBER} (${PR_HEAD_REF}). Follow these steps exactly.
+
+          STEP 1 — Checkout the PR:
+            git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER}
+            git checkout pr-${PR_NUMBER}
+
+          STEP 2 — Review:
+            a. Stage the diff: git diff main...HEAD > .review/review-diff.txt && git diff main...HEAD --name-only > .review/review-files.txt
+            b. Run /fresh-eyes-review
+
+          STEP 3 — Post results:
+            Based on the verdict:
+            - BLOCK/FIX_BEFORE_COMMIT: gh pr review ${PR_NUMBER} --request-changes --body '<findings>'
+            - APPROVED_WITH_NOTES: gh pr review ${PR_NUMBER} --comment --body '<findings>'
+            - APPROVED: gh pr review ${PR_NUMBER} --approve --body 'Fresh-eyes review passed.'
+
+          STEP 4 — Cleanup:
+            git checkout main && git branch -D pr-${PR_NUMBER}"
+        env:
+          CLAUDE_OPS_HOME: ${{ vars.CLAUDE_OPS_HOME }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_HEAD_REF: ${{ inputs.pr_branch }}
